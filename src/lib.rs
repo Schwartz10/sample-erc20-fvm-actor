@@ -127,19 +127,19 @@ pub fn invoke(params_id: u32) -> u32 {
             mint(params);
             None
         },
-        3 => {
-            let params: TransferParams = match params_raw(params_id) {
-                Ok(params) => {
-                    match from_slice(params.1.as_slice()) {
-                        Ok(v) => v,
-                        Err(err) => abort!(USR_SERIALIZATION, "failed to parse params: {:?}", err),
-                    }
-                },
-                Err(err) => abort!(USR_ILLEGAL_ARGUMENT, "failed to parse params: {:?}", err),
-            };
-            transfer(params);
-            None
-        }
+        // 2 => {
+        //     let params: TransferParams = match params_raw(params_id) {
+        //         Ok(params) => {
+        //             match from_slice(params.1.as_slice()) {
+        //                 Ok(v) => v,
+        //                 Err(err) => abort!(USR_SERIALIZATION, "failed to parse params: {:?}", err),
+        //             }
+        //         },
+        //         Err(err) => abort!(USR_ILLEGAL_ARGUMENT, "failed to parse params: {:?}", err),
+        //     };
+        //     transfer(params);
+        //     None
+        // }
         _ => abort!(USR_UNHANDLED_MESSAGE, "unrecognized method"),
     };
 
@@ -201,78 +201,16 @@ pub fn mint(params: TransferParams) {
     // Load the balances HAMT.
     // TODO Using BitIntDe because it's both Ser and De; this is a misnomer and
     //  we should fix it.
-    let mut balances =
-        match Hamt::<Blockstore, BigIntDe, ActorID>::load(&state.balances, Blockstore) {
-            Ok(map) => map,
-            Err(err) => abort!(USR_ILLEGAL_STATE, "failed to load balances hamt: {:?}", err),
-        };
-}
-
-/// The input parameters for a transfer.
-#[derive(Serialize_tuple, Deserialize_tuple, Clone, Debug)]
-pub struct TransferParams {
-    pub recipient: Address,
-    #[serde(with = "bigint_ser")]
-    pub amount: TokenAmount,
-}
-
-impl Cbor for TransferParams {}
-
-/// Transfer a token amount.
-pub fn transfer(params: TransferParams) {
-    let mut state = State::load();
-
-    // Load the balances HAMT.
-    // TODO Using BitIntDe because it's both Ser and De; this is a misnomer and
-    //  we should fix it.
-    let mut balances =
-        match Hamt::<Blockstore, BigIntDe, ActorID>::load(&state.balances, Blockstore) {
-            Ok(map) => map,
-            Err(err) => abort!(USR_ILLEGAL_STATE, "failed to load balances hamt: {:?}", err),
-        };
-
-    // Load the sender's balance.
-    let sender_id = fvm_sdk::message::caller();
-    let mut sender_bal = match balances.get(&sender_id) {
-        Ok(Some(bal)) => bal.clone(),
-        Ok(None) => BigIntDe(TokenAmount::from(0)),
-        Err(err) => abort!(USR_ILLEGAL_STATE, "failed to get balance: {:?}", err),
+    let mut balances = match Hamt::<Blockstore, BigIntDe, ActorID>::load(&state.balances, Blockstore) {
+        Ok(map) => map,
+        Err(err) => abort!(USR_ILLEGAL_STATE, "failed to load balances hamt: {:?}", err),
     };
 
-    // Sender has insufficient balance.
-    if sender_bal.0 < params.amount {
-        abort!(USR_INSUFFICIENT_FUNDS, "sender has insufficient balance")
-    }
-
-    // Resolve the recipient into an ID address.
-    // TODO See addressing section on module docs.
     let recipient_id = match fvm_sdk::actor::resolve_address(&params.recipient) {
         Some(id) => id,
         None => abort!(USR_ILLEGAL_ARGUMENT, "failed to resolve address"),
     };
 
-    // Forbid sends to self.
-    if sender_id == recipient_id {
-        abort!(USR_ILLEGAL_ARGUMENT, "cannot send to self");
-    }
-
-    // // Ensure that the recipient is an account actor; otherwise they will never
-    // // be able to spend the funds. (At least in the current protocol)
-    // match sdk::actor::get_actor_code_cid(&params.recipient) {
-    //     None => abort!(USR_ILLEGAL_ARGUMENT, "cannot resolve actor type of recipient"),
-    //     Some(cid) => {
-    //         /// The multicodec value for raw data.
-    //         const IPLD_CODEC_RAW: u64 = 0x55;
-    //         // TODO this is embarrassingly wrong, as hardcoding the actor version doesn't allow evolution.
-    //         //  but we need to figure out the upgradability story to solve this.
-    //         let other = Cid::new_v1(IPLD_CODEC_RAW, Code::Identity.digest(b"fil/6/account"));
-    //         if cid != other {
-    //             abort!(USR_ILLEGAL_ARGUMENT, "recipient is not an account actor")
-    //         }
-    //     }
-    // }
-
-    // Load the recipient's balance.
     let mut recipient_bal = match balances.get(&recipient_id) {
         Ok(Some(bal)) => bal.clone(),
         Ok(None) => BigIntDe(TokenAmount::from(0)),
@@ -283,20 +221,8 @@ pub fn transfer(params: TransferParams) {
         ),
     };
 
-    // Update balances.
-    sender_bal.0 -= &params.amount;
     recipient_bal.0 += &params.amount;
 
-    // Set the updated sender balance in the balances HAMT.
-    if let Err(err) = balances.set(sender_id, sender_bal.clone()) {
-        abort!(
-            USR_ILLEGAL_STATE,
-            "failed to set new sender balance in balances hamt: {:?}",
-            err
-        )
-    }
-
-    // Set the updated recipient balance in the balances HAMT.
     if let Err(err) = balances.set(recipient_id, recipient_bal.clone()) {
         abort!(
             USR_ILLEGAL_STATE,
@@ -326,5 +252,124 @@ pub fn transfer(params: TransferParams) {
         abort!(USR_ILLEGAL_STATE, "failed to set new state root: {:?}", err)
     }
 }
+
+/// The input parameters for a transfer.
+#[derive(Serialize_tuple, Deserialize_tuple, Clone, Debug)]
+pub struct TransferParams {
+    pub recipient: Address,
+    #[serde(with = "bigint_ser")]
+    pub amount: TokenAmount,
+}
+
+impl Cbor for TransferParams {}
+
+// /// Transfer a token amount.
+// pub fn transfer(params: TransferParams) {
+//     let mut state = State::load();
+
+//     // Load the balances HAMT.
+//     // TODO Using BitIntDe because it's both Ser and De; this is a misnomer and
+//     //  we should fix it.
+//     let mut balances =
+//         match Hamt::<Blockstore, BigIntDe, ActorID>::load(&state.balances, Blockstore) {
+//             Ok(map) => map,
+//             Err(err) => abort!(USR_ILLEGAL_STATE, "failed to load balances hamt: {:?}", err),
+//         };
+
+//     // Load the sender's balance.
+//     let sender_id = fvm_sdk::message::caller();
+//     let mut sender_bal = match balances.get(&sender_id) {
+//         Ok(Some(bal)) => bal.clone(),
+//         Ok(None) => BigIntDe(TokenAmount::from(0)),
+//         Err(err) => abort!(USR_ILLEGAL_STATE, "failed to get balance: {:?}", err),
+//     };
+
+//     // Sender has insufficient balance.
+//     if sender_bal.0 < params.amount {
+//         abort!(USR_INSUFFICIENT_FUNDS, "sender has insufficient balance")
+//     }
+
+//     // Resolve the recipient into an ID address.
+//     // TODO See addressing section on module docs.
+//     let recipient_id = match fvm_sdk::actor::resolve_address(&params.recipient) {
+//         Some(id) => id,
+//         None => abort!(USR_ILLEGAL_ARGUMENT, "failed to resolve address"),
+//     };
+
+//     // Forbid sends to self.
+//     if sender_id == recipient_id {
+//         abort!(USR_ILLEGAL_ARGUMENT, "cannot send to self");
+//     }
+
+//     // // Ensure that the recipient is an account actor; otherwise they will never
+//     // // be able to spend the funds. (At least in the current protocol)
+//     // match sdk::actor::get_actor_code_cid(&params.recipient) {
+//     //     None => abort!(USR_ILLEGAL_ARGUMENT, "cannot resolve actor type of recipient"),
+//     //     Some(cid) => {
+//     //         /// The multicodec value for raw data.
+//     //         const IPLD_CODEC_RAW: u64 = 0x55;
+//     //         // TODO this is embarrassingly wrong, as hardcoding the actor version doesn't allow evolution.
+//     //         //  but we need to figure out the upgradability story to solve this.
+//     //         let other = Cid::new_v1(IPLD_CODEC_RAW, Code::Identity.digest(b"fil/6/account"));
+//     //         if cid != other {
+//     //             abort!(USR_ILLEGAL_ARGUMENT, "recipient is not an account actor")
+//     //         }
+//     //     }
+//     // }
+
+//     // Load the recipient's balance.
+//     let mut recipient_bal = match balances.get(&recipient_id) {
+//         Ok(Some(bal)) => bal.clone(),
+//         Ok(None) => BigIntDe(TokenAmount::from(0)),
+//         Err(err) => abort!(
+//             USR_ILLEGAL_STATE,
+//             "failed to query hamt when getting recipient balance: {:?}",
+//             err
+//         ),
+//     };
+
+//     // Update balances.
+//     sender_bal.0 -= &params.amount;
+//     recipient_bal.0 += &params.amount;
+
+//     // Set the updated sender balance in the balances HAMT.
+//     if let Err(err) = balances.set(sender_id, sender_bal.clone()) {
+//         abort!(
+//             USR_ILLEGAL_STATE,
+//             "failed to set new sender balance in balances hamt: {:?}",
+//             err
+//         )
+//     }
+
+//     // Set the updated recipient balance in the balances HAMT.
+//     if let Err(err) = balances.set(recipient_id, recipient_bal.clone()) {
+//         abort!(
+//             USR_ILLEGAL_STATE,
+//             "failed to set new recipient balance in balances hamt: {:?}",
+//             err
+//         )
+//     }
+
+//     // Flush the HAMT to generate the new root CID to update the actor's state.
+//     let cid = match balances.flush() {
+//         Ok(cid) => cid,
+//         Err(err) => abort!(
+//             USR_ILLEGAL_STATE,
+//             "failed to query hamt when getting recipient balance: {:?}",
+//             err
+//         ),
+//     };
+
+//     // Update the actor's state.
+//     state.balances = cid;
+//     let root = match Blockstore.put_cbor(&state, Code::Blake2b256) {
+//         Ok(cid) => cid,
+//         Err(err) => abort!(USR_ILLEGAL_STATE, "failed to write new state: {:?}", err),
+//     };
+
+//     if let Err(err) = fvm_sdk::sself::set_root(&root) {
+//         abort!(USR_ILLEGAL_STATE, "failed to set new state root: {:?}", err)
+//     }
+// }
 
 
